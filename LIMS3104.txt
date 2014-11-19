@@ -1,0 +1,348 @@
+cd ~/Datafiles/Pseudo/LIMS3104
+find /data/illum/130925_M01442_0042_000000000-A5HE3/Project_Harrison_3104_m1/ \
+|grep -v 'backup'|grep gz| xargs -I {} ln -s {} .
+
+#extract unmapped reads
+bowtie2 --fast -x ~/Datafiles/Pseudo/Pf_ref/NC_012660 \
+-1 1-57SBW_CGATGT_L001_R1_001.fastq.gz -2 1-57SBW_CGATGT_L001_R2_001.fastq.gz |\
+awk '$3=="\*" {print $1}' > sample1_unmapped_names.txt
+#90% alignment
+uniq sample1_unmapped_names.txt > sample1_unmapped_names_uniq.txt
+seqtk subseq 1-57SBW_CGATGT_L001_R1_001.fastq.gz sample1_unmapped_names_uniq.txt | gzip - > \
+sample1_unmapped_R1.fastq.gz
+seqtk subseq 1-57SBW_CGATGT_L001_R2_001.fastq.gz sample1_unmapped_names_uniq.txt | gzip - > \
+sample1_unmapped_R2.fastq.gz
+
+#try spades, suggested for 2 x 150bp
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 sample1_unmapped_R1.fastq.gz -2 sample1_unmapped_R2.fastq.gz \
+-o sample1_spades
+#gives one 600kb contig and lots of shrapnel, coverage only ~ 9 though?
+cd ~/Datafiles/Pseudo/LIMS3104/sample1_spades
+seqtk subseq -l 80 contigs.fasta <(echo 'NODE_1_length_606522_cov_9.36284_ID_233160') > long.contig.fasta
+
+bowtie2-build long.contig.fasta long_contig
+bowtie2 -p 12 -1 ../sample1_unmapped_R1.fastq.gz -2 ../sample1_unmapped_R2.fastq.gz \
+-x long_contig |samtools view -bS - > long_contig.bam
+samtools sort long_contig.bam long_contig_sorted
+
+cd ~/Datafiles/Pseudo/LIMS3104
+#sample 2
+R1=2-55SBW_ACAGTG_L001_R1_001.fastq.gz
+R2=2-55SBW_ACAGTG_L001_R2_001.fastq.gz
+sample=sample2
+bowtie2 -p 12 --fast -x ~/Datafiles/Pseudo/Pf_ref/NC_012660 \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+#sample 3 is in unsequenced putida
+#assemble everything in it
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 3-57PUT_GCCAAT_L001_R1_001.fastq.gz -2 3-57PUT_GCCAAT_L001_R2_001.fastq.gz \
+-o sample3_all_spades
+
+#sample6, run away memory use
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 6-44PUT2_CTTGTA_L001_R1_001.fastq.gz -2 6-44PUT2_CTTGTA_L001_R2_001.fastq.gz \
+-o sample6_all_spades
+
+#sample7
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 7-55PUT2_GTGAAA_L001_R1_001.fastq.gz -2 7-55PUT2_GTGAAA_L001_R2_001.fastq.gz \
+-o sample7_all_spades
+
+#combine plasmids from 1 & 2, all from 3 & 7
+tmpreads=`mktemp -d -p /scratch stevep11.XXXXXX`
+zcat sample1_spades/corrected/sample1_unmapped_R1.fastq.00.0_0.cor.fastq.gz \
+sample2_spades/corrected/sample2_unmapped_R1.fastq.00.0_0.cor.fastq.gz \
+sample3_all_spades/corrected/3-57PUT_GCCAAT_L001_R1_001.fastq.00.0_0.cor.fastq.gz \
+sample7_all_spades/corrected/7-55PUT2_GTGAAA_L001_R1_001.fastq.00.0_0.cor.fastq.gz |\
+gzip - > $tmpreads/R1_1237.fastq.gz &
+
+zcat sample1_spades/corrected/sample1_unmapped_R2.fastq.00.0_0.cor.fastq.gz \
+sample2_spades/corrected/sample2_unmapped_R2.fastq.00.0_0.cor.fastq.gz \
+sample3_all_spades/corrected/3-57PUT_GCCAAT_L001_R2_001.fastq.00.0_0.cor.fastq.gz \
+sample7_all_spades/corrected/7-55PUT2_GTGAAA_L001_R2_001.fastq.00.0_0.cor.fastq.gz |\
+gzip - > $tmpreads/R2_1237.fastq.gz &
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -m 28 -k 21,33,55,77 --only-assembler --careful \
+-1 $tmpreads/R1_1237.fastq.gz -2 $tmpreads/R2_1237.fastq.gz \
+-o sample1237_spades
+
+#mixed success (coverage too high?) filter out plasmid then assemble bacteria
+prinseq-lite.pl -fasta sample1_spades/scaffolds.fasta -out_good sample1_spades/long_scaffolds \
+-min_len 2000 -out_bad sample1_spades/short_scaffolds 
+prinseq-lite.pl -fasta sample2_spades/scaffolds.fasta -out_good sample2_spades/long_scaffolds \
+-min_len 2000 -out_bad sample2_spades/short_scaffolds 
+
+bowtie2-build sample1_spades/long_scaffolds.fasta sample1_spades/long_scaffolds
+bowtie2-build sample2_spades/long_scaffolds.fasta sample2_spades/long_scaffolds
+
+#sample 3chr
+R1=3-57PUT_GCCAAT_L001_R1_001.fastq.gz
+R2=3-57PUT_GCCAAT_L001_R2_001.fastq.gz
+sample=sample3chr
+bowtie2 -p 12 --fast -x sample1_spades/long_scaffolds \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+#sample 7chr
+R1=7-55PUT2_GTGAAA_L001_R1_001.fastq.gz 
+R2=7-55PUT2_GTGAAA_L001_R2_001.fastq.gz 
+sample=sample7chr
+bowtie2 -p 12 --fast -x sample2_spades/long_scaffolds \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+prinseq-lite.pl -fasta sample3chr_spades/scaffolds.fasta -out_good sample3chr_spades/long_scaffolds \
+-min_len 2000 -out_bad sample3chr_spades/short_scaffolds 
+prinseq-lite.pl -fasta sample7chr_spades/scaffolds.fasta -out_good sample7chr_spades/long_scaffolds \
+-min_len 2000 -out_bad sample7chr_spades/short_scaffolds 
+
+bowtie2-build sample7chr_spades/long_scaffolds.fasta sample7chr_spades/long_scaffolds
+#sample 6 plasmid
+R1=6-44PUT2_CTTGTA_L001_R1_001.fastq.gz 
+R2=6-44PUT2_CTTGTA_L001_R2_001.fastq.gz 
+sample=sample6plasmid
+bowtie2 -p 12 --fast -x sample7chr_spades/long_scaffolds \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+prinseq-lite.pl -fasta sample6plasmid_spades/scaffolds.fasta -out_good sample6plasmid_spades/long_scaffolds \
+-min_len 2000 -out_bad sample6plasmid_spades/short_scaffolds 
+
+
+#actcompare against putida F1 genome
+
+actcompare --refformat=fasta --queryformat=fasta --joinseq=50N \
+--reorder --cleanup --extras \
+NC_009512.fasta sample3chr_spades/long_scaffolds.fasta sample7chr_spades/long_scaffolds.fasta
+
+cat <(echo '>putida_UWC1') <(sed '1,/ORIGIN/d' long_scaffolds.catgb |sed '/\/\//d' | sed 's/[0-9]//g'| sed 's/ //g') > putida_UWC1.fasta
+
+cat ~/Datafiles/Pseudo/Pf_ref/NC_012660.fasta putida_UWC1.fasta \
+<(sed 's/>/>plasmid57_/' sample1_spades/long.contig.fasta) \
+sample2_spades/plasmid55.fasta sample6plasmid_spades/plasmid44.fasta \
+> LIMS3104_combined_ref.fasta
+
+#map all libraries
+bowtie2-build LIMS3104_combined_ref.fasta LIMS3104_combined_ref
+mkdir bams
+
+tmpbam=`mktemp -d -p /scratch stevep11.XXXXXX` 
+bowtie2 -p 12 --fast -x LIMS3104_combined_ref \
+-1 1-57SBW_CGATGT_L001_R1_001.fastq.gz -2 1-57SBW_CGATGT_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams/sample1_sorted
+samtools index bams/sample1_sorted.bam
+
+bowtie2 -p 12 --fast -x LIMS3104_combined_ref \
+-1 2-55SBW_ACAGTG_L001_R1_001.fastq.gz  -2 2-55SBW_ACAGTG_L001_R2_001.fastq.gz  \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams/sample2_sorted
+samtools index bams/sample2_sorted.bam
+
+bowtie2 -p 12 --fast -x LIMS3104_combined_ref \
+-1 3-57PUT_GCCAAT_L001_R1_001.fastq.gz -2 3-57PUT_GCCAAT_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams/sample3_sorted
+samtools index bams/sample3_sorted.bam
+
+bowtie2 -p 12 --fast -x LIMS3104_combined_ref \
+-1 6-44PUT2_CTTGTA_L001_R1_001.fastq.gz -2 6-44PUT2_CTTGTA_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams/sample6_sorted
+samtools index bams/sample6_sorted.bam
+
+bowtie2 -p 12 --fast -x LIMS3104_combined_ref \
+-1 7-55PUT2_GTGAAA_L001_R1_001.fastq.gz -2 7-55PUT2_GTGAAA_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams/sample7_sorted
+samtools index bams/sample7_sorted.bam
+
+#a lot of the plasmid reads also map to SBW25, mapping parameters? seem to be shorter alignments
+tmpbam=`mktemp -d -p /scratch stevep11.XXXXXX` 
+bowtie2 -p 12 --very-sensitive -x LIMS3104_combined_ref \
+-1 1-57SBW_CGATGT_L001_R1_001.fastq.gz -2 1-57SBW_CGATGT_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams2/sample1_sorted
+samtools index bams2/sample1_sorted.bam
+
+bowtie2 -p 12 --very-sensitive -x LIMS3104_combined_ref \
+-1 2-55SBW_ACAGTG_L001_R1_001.fastq.gz  -2 2-55SBW_ACAGTG_L001_R2_001.fastq.gz  \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams2/sample2_sorted
+samtools index bams2/sample2_sorted.bam
+
+bowtie2 -p 12 --very-sensitive -x LIMS3104_combined_ref \
+-1 3-57PUT_GCCAAT_L001_R1_001.fastq.gz -2 3-57PUT_GCCAAT_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams2/sample3_sorted
+samtools index bams2/sample3_sorted.bam
+
+bowtie2 -p 12 --very-sensitive -x LIMS3104_combined_ref \
+-1 6-44PUT2_CTTGTA_L001_R1_001.fastq.gz -2 6-44PUT2_CTTGTA_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams2/sample6_sorted
+samtools index bams2/sample6_sorted.bam
+
+bowtie2 -p 12 --very-sensitive -x LIMS3104_combined_ref \
+-1 7-55PUT2_GTGAAA_L001_R1_001.fastq.gz -2 7-55PUT2_GTGAAA_L001_R2_001.fastq.gz \
+|samtools view -bS - > $tmpbam/tmp.bam
+samtools sort $tmpbam/tmp.bam bams2/sample7_sorted
+samtools index bams2/sample7_sorted.bam
+
+cd bams2
+samtools view sample1_sorted.bam plasmid57_NODE_1_length_606522_cov_9.36284_ID_233160\
+|awk '$7=="=" {print $1}'|sort|uniq > p57_sample1.names
+samtools view sample3_sorted.bam plasmid57_NODE_1_length_606522_cov_9.36284_ID_233160\
+|awk '$7=="=" {print $1}'|sort|uniq > p57_sample3.names
+
+samtools view sample2_sorted.bam plasmid55_NODE_1_length_119061_cov_20.198_ID_168574\
+|awk '$7=="=" {print $1}'|sort|uniq > p55_sample2.names
+samtools view sample7_sorted.bam plasmid55_NODE_1_length_119061_cov_20.198_ID_168574\
+|awk '$7=="=" {print $1}'|sort|uniq > p55_sample7.names
+samtools view sample2_sorted.bam plasmid55_NODE_2_length_38540_cov_25.9014_ID_168584\
+|awk '$7=="=" {print $1}'|sort|uniq >> p55_sample2.names
+samtools view sample7_sorted.bam plasmid55_NODE_2_length_38540_cov_25.9014_ID_168584\
+|awk '$7=="=" {print $1}'|sort|uniq >> p55_sample7.names
+
+
+samtools view sample6_sorted.bam plasmid44_NODE_1_length_91834_cov_99.5_ID_181038\
+|awk '$7=="=" {print $1}'|sort|uniq > p44_sample6.names
+samtools view sample6_sorted.bam plasmid44_NODE_2_length_51363_cov_82.4592_ID_181022\
+|awk '$7=="=" {print $1}'|sort|uniq >> p44_sample6.names
+samtools view sample6_sorted.bam plasmid44_NODE_5_length_2431_cov_69.246_ID_180872\
+|awk '$7=="=" {print $1}'|sort|uniq >> p44_sample6.names
+samtools view sample6_sorted.bam plasmid44_NODE_6_length_2140_cov_84.8279_ID_180768\
+|awk '$7=="=" {print $1}'|sort|uniq >> p44_sample6.names
+
+seqtk subseq ../1-57SBW_CGATGT_L001_R1_001.fastq.gz p57_sample1.names > p57_R1.fastq
+seqtk subseq ../1-57SBW_CGATGT_L001_R2_001.fastq.gz p57_sample1.names > p57_R2.fastq
+seqtk subseq ../3-57PUT_GCCAAT_L001_R1_001.fastq.gz p57_sample3.names >> p57_R1.fastq
+seqtk subseq ../3-57PUT_GCCAAT_L001_R2_001.fastq.gz p57_sample3.names >> p57_R2.fastq
+
+seqtk subseq ../2-55SBW_ACAGTG_L001_R1_001.fastq.gz p55_sample2.names > p55_R1.fastq
+seqtk subseq ../2-55SBW_ACAGTG_L001_R2_001.fastq.gz p55_sample2.names > p55_R2.fastq
+seqtk subseq ../7-55PUT2_GTGAAA_L001_R1_001.fastq.gz p55_sample7.names >> p55_R1.fastq
+seqtk subseq ../7-55PUT2_GTGAAA_L001_R2_001.fastq.gz p55_sample7.names >> p55_R2.fastq
+
+seqtk subseq ../6-44PUT2_CTTGTA_L001_R1_001.fastq.gz p44_sample6.names > p44_R1.fastq
+seqtk subseq ../6-44PUT2_CTTGTA_L001_R2_001.fastq.gz p44_sample6.names > p44_R2.fastq
+pigz -p 12 *.fastq
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 p57_R1.fastq.gz -2 p57_R2.fastq.gz -o p57
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 p55_R1.fastq.gz -2 p55_R2.fastq.gz -o p55
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 p44_R1.fastq.gz -2 p44_R2.fastq.gz -o p44
+
+echo "NODE_1_length_614336_cov_31.2297_ID_189440" > tmp.txt
+seqtk subseq -l 80 p57/scaffolds.fasta  tmp.txt >p57/p57.fasta
+
+echo "NODE_1_length_119058_cov_189.725_ID_164904" >tmp.txt
+echo "NODE_2_length_38540_cov_177.884_ID_164892" >>tmp.txt
+seqtk subseq -l 80 p55/scaffolds.fasta  tmp.txt >p55/p55.fasta
+
+echo "NODE_1_length_91834_cov_86.3014_ID_35726" >tmp.txt
+echo "NODE_2_length_51363_cov_75.2055_ID_35728" >>tmp.txt
+echo "NODE_3_length_2453_cov_90.0455_ID_35736" >>tmp.txt
+echo "NODE_4_length_2183_cov_87.7336_ID_35652" >> tmp.txt
+seqtk subseq -l 80 p44/scaffolds.fasta  tmp.txt >p44/p44.fasta
+
+#sample 3
+R1=3-57PUT_GCCAAT_L001_R1_001.fastq.gz
+R2=3-57PUT_GCCAAT_L001_R2_001.fastq.gz
+sample=sample3
+bowtie2 -p 12 --fast -x ~/Datafiles/Pseudo/Pf_ref/NC_012660 \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+#sample 6
+R1=6-44PUT2_CTTGTA_L001_R1_001.fastq.gz 
+R2=6-44PUT2_CTTGTA_L001_R2_001.fastq.gz 
+sample=sample6
+bowtie2 -p 12 --fast -x ~/Datafiles/Pseudo/Pf_ref/NC_012660 \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
+#sample 7
+R1=7-55PUT2_GTGAAA_L001_R1_001.fastq.gz 
+R2=7-55PUT2_GTGAAA_L001_R1_002.fastq.gz 
+sample=sample7
+bowtie2 -p 12 --fast -x ~/Datafiles/Pseudo/Pf_ref/NC_012660 \
+-1 $R1 -2 $R2 |\
+awk '$3=="\*" {print $1}' > ${sample}_unmapped_names.txt
+#
+uniq ${sample}_unmapped_names.txt > ${sample}_unmapped_names_uniq.txt
+seqtk subseq $R1 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R1.fastq.gz
+seqtk subseq $R2 ${sample}_unmapped_names_uniq.txt | gzip - > \
+${sample}_unmapped_R2.fastq.gz
+
+~/bin/SPAdes-2.5.1-Linux/bin/spades.py -k 21,33,55,77 --careful \
+-1 ${sample}_unmapped_R1.fastq.gz -2 ${sample}_unmapped_R2.fastq.gz \
+-o ${sample}_spades
+
